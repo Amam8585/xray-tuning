@@ -209,8 +209,8 @@ fs.nr_open = 134217728
 fs.inotify.max_user_watches = 1048576
 fs.inotify.max_user_instances = 16384
 
-# Network core optimization
-net.core.default_qdisc = fq_codel
+# Network core optimization (stable defaults)
+net.core.default_qdisc = codel
 net.core.netdev_max_backlog = 262144
 net.core.optmem_max = 4194304
 net.core.somaxconn = 131072
@@ -219,10 +219,10 @@ net.core.wmem_max = 134217728
 net.core.rmem_default = 4194304
 net.core.wmem_default = 4194304
 
-# TCP optimization for Xray-Core and VPN services
+# TCP optimization for Xray-Core and VPN services (lossy/stable profile)
 net.ipv4.tcp_rmem = 32768 4194304 134217728
 net.ipv4.tcp_wmem = 32768 4194304 134217728
-net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_congestion_control = cubic
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_keepalive_time = 120
@@ -240,7 +240,7 @@ net.ipv4.tcp_dsack = 1
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_window_scaling = 1
 net.ipv4.tcp_adv_win_scale = -2
-net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn = 0
 net.ipv4.tcp_ecn_fallback = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.ip_local_port_range = 1024 65535
@@ -339,8 +339,8 @@ net.ipv4.tcp_rmem = 8192 131072 134217728
 net.ipv4.tcp_wmem = 8192 131072 134217728
 
 # Congestion + qdisc (latency control)
-net.core.default_qdisc = fq_codel
-net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = codel
+net.ipv4.tcp_congestion_control = cubic
 
 # TCP behavior
 net.ipv4.tcp_fastopen = 3
@@ -356,7 +356,7 @@ net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_sack = 1
 net.ipv4.tcp_dsack = 1
 net.ipv4.tcp_fack = 1
-net.ipv4.tcp_ecn = 2
+net.ipv4.tcp_ecn = 0
 net.ipv4.tcp_syn_retries = 3
 net.ipv4.tcp_synack_retries = 3
 net.ipv4.tcp_retries1 = 3
@@ -403,7 +403,20 @@ fs.pipe-max-size = 4194304
 EOF
 
 # Apply sysctl (do not fail the whole script if some keys are unsupported)
-sysctl -p /etc/sysctl.conf 2>/var/log/sysctl-extra-warn.log || true
+sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+
+# Optional speed-oriented TCP profile for clean links (BBR + FQ_CoDel)
+echo
+yellow_msg "Use speed profile (BBR + FQ_CoDel) instead of stable Cubic + CoDel? (y/n)"
+read -r speed_profile_choice
+
+if [[ "$speed_profile_choice" =~ ^[Yy]$ ]]; then
+  sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+  sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1 || true
+  green_msg "Speed profile applied (BBR + FQ_CoDel)."
+else
+  yellow_msg "Stable profile retained (Cubic + CoDel)."
+fi
 
 yellow_msg 'Optimizing SSH...'
 cp $SSH_PATH /etc/ssh/sshd_config.bak
@@ -468,6 +481,30 @@ echo "ulimit -v unlimited" | tee -a $PROF_PATH
 echo "ulimit -x unlimited" | tee -a $PROF_PATH
 cyan_msg 'System limits optimized for maximum connections'
 
+# --- Safe NIC tuning for stability (no logs) ---
+apt -y install ethtool >/dev/null 2>&1 || true
+
+IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+if [[ -n "$IFACE" ]]; then
+
+  # Increase ring buffers to NIC maximum (if supported)
+  RING="$(ethtool -g "$IFACE" 2>/dev/null || true)"
+  MAX_RX="$(echo "$RING" | awk '/Pre-set maximums:/,0' | awk '/RX:/ {print $2; exit}')"
+  MAX_TX="$(echo "$RING" | awk '/Pre-set maximums:/,0' | awk '/TX:/ {print $2; exit}')"
+
+  args=()
+  [[ -n "$MAX_RX" ]] && args+=(rx "$MAX_RX")
+  [[ -n "$MAX_TX" ]] && args+=(tx "$MAX_TX")
+  [[ ${#args[@]} -gt 0 ]] && ethtool -G "$IFACE" "${args[@]}" 2>/dev/null || true
+
+  # Enable safe, low-risk NIC features
+  ethtool -K "$IFACE" rx-checksumming on 2>/dev/null || true
+  ethtool -K "$IFACE" tx-checksumming on 2>/dev/null || true
+  ethtool -K "$IFACE" scatter-gather on 2>/dev/null || true
+  ethtool -K "$IFACE" receive-hashing on 2>/dev/null || true
+
+fi
+
 # Ensure tc is available
 if ! command -v tc >/dev/null 2>&1; then
   yellow_msg "Installing iproute2 (tc command)..."
@@ -493,31 +530,17 @@ apply_tc_smart() {
   # Adjust txqueuelen (safe default)
   echo 1000 > "/sys/class/net/$IFACE/tx_queue_len" 2>/dev/null
 
-  # Try CAKE -> FQ_CoDel -> HTB -> PFIFO -> fallback netem
-  if tc qdisc add dev "$IFACE" root handle 1: cake bandwidth 1000mbit rtt 20ms 2>/dev/null \
-     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
-    green_msg "CAKE + Netem optimization applied on $IFACE"
+  # Try CAKE -> FQ_CoDel -> PFIFO
+  if tc qdisc add dev "$IFACE" root handle 1: cake bandwidth 1000mbit rtt 20ms 2>/dev/null; then
+    green_msg "CAKE queue discipline applied on $IFACE"
     return 0
 
-  elif tc qdisc add dev "$IFACE" root handle 1: fq_codel limit 10240 flows 1024 target 5ms interval 100ms 2>/dev/null \
-     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
-    green_msg "FQ_CoDel + Netem optimization applied on $IFACE"
+  elif tc qdisc add dev "$IFACE" root handle 1: fq_codel limit 10240 flows 1024 target 5ms interval 100ms 2>/dev/null; then
+    green_msg "FQ_CoDel queue discipline applied on $IFACE"
     return 0
 
-  elif tc qdisc add dev "$IFACE" root handle 1: htb default 11 2>/dev/null \
-     && tc class add dev "$IFACE" parent 1: classid 1:1 htb rate 1000mbit ceil 1000mbit 2>/dev/null \
-     && tc class add dev "$IFACE" parent 1:1 classid 1:11 htb rate 1000mbit ceil 1000mbit 2>/dev/null \
-     && tc qdisc add dev "$IFACE" parent 1:11 handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
-    green_msg "HTB + Netem optimization applied on $IFACE"
-    return 0
-
-  elif tc qdisc add dev "$IFACE" root handle 1: pfifo_fast 2>/dev/null \
-     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% 2>/dev/null; then
-    green_msg "PFIFO + Netem optimization applied on $IFACE"
-    return 0
-
-  elif tc qdisc add dev "$IFACE" root netem delay 1ms loss 0.005% 2>/dev/null; then
-    yellow_msg "Fallback Netem applied on $IFACE"
+  elif tc qdisc add dev "$IFACE" root handle 1: pfifo_fast 2>/dev/null; then
+    yellow_msg "Fallback pfifo_fast applied on $IFACE"
     return 0
   fi
 
@@ -526,23 +549,23 @@ apply_tc_smart() {
 }
 
 # Run once now (always)
-apply_tc_smart >> /var/log/tc_smart.log 2>&1
+apply_tc_smart
 
-# Ask user if we should persist via cron @reboot
 echo
-yellow_msg "Do you want to persist TC optimization after reboot by adding a cron @reboot job? (y/n)"
-read -r tc_choice
+yellow_msg "Do you want to add optional Netem impairments (delay/loss) on top? (n = default clean path) (y/n)"
+read -r netem_choice
 
-if [[ "$tc_choice" == "y" || "$tc_choice" == "Y" ]]; then
-  # Remove old entries (avoid duplicates)
-  crontab -l 2>/dev/null | grep -v "tc_smart.log" | crontab - 2>/dev/null
-
-  # Install new @reboot cron
-  (crontab -l 2>/dev/null; echo "@reboot sleep 30 && bash -lc '$(declare -f apply_tc_smart); apply_tc_smart' >> /var/log/tc_smart.log 2>&1") | crontab -
-
-  green_msg "Cron @reboot added: TC optimization will re-apply after reboot."
+if [[ "$netem_choice" =~ ^[Yy]$ ]]; then
+  IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5; exit}')
+  if [[ -n "$IFACE" ]]; then
+    tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null && \
+      green_msg "Netem impairments enabled on $IFACE" || \
+      yellow_msg "Could not enable Netem on $IFACE"
+  else
+    yellow_msg "No interface detected for Netem application."
+  fi
 else
-  yellow_msg "Cron not added. TC optimization was applied only for this session."
+  yellow_msg "Netem skipped; clean CAKE/FQ_CoDel path in use."
 fi
 
 echo

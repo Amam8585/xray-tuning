@@ -468,6 +468,84 @@ echo "ulimit -v unlimited" | tee -a $PROF_PATH
 echo "ulimit -x unlimited" | tee -a $PROF_PATH
 cyan_msg 'System limits optimized for maximum connections'
 
+# Ensure tc is available
+if ! command -v tc >/dev/null 2>&1; then
+  yellow_msg "Installing iproute2 (tc command)..."
+  apt -y install iproute2
+fi
+
+yellow_msg "Applying traffic control (TC) to reduce packet loss/jitter..."
+
+apply_tc_smart() {
+  # Detect main interface
+  local IFACE
+  IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5; exit}')
+
+  if [ -z "$IFACE" ]; then
+    red_msg "Could not detect default network interface. Skipping TC."
+    return 1
+  fi
+
+  # Cleanup old qdisc
+  tc qdisc del dev "$IFACE" root 2>/dev/null
+  tc qdisc del dev "$IFACE" ingress 2>/dev/null
+
+  # Set MTU and txqueuelen (safe defaults)
+  ip link set dev "$IFACE" mtu 1500 2>/dev/null
+  echo 1000 > "/sys/class/net/$IFACE/tx_queue_len" 2>/dev/null
+
+  # Try CAKE -> FQ_CoDel -> HTB -> PFIFO -> fallback netem
+  if tc qdisc add dev "$IFACE" root handle 1: cake bandwidth 1000mbit rtt 20ms 2>/dev/null \
+     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
+    green_msg "CAKE + Netem optimization applied on $IFACE"
+    return 0
+
+  elif tc qdisc add dev "$IFACE" root handle 1: fq_codel limit 10240 flows 1024 target 5ms interval 100ms 2>/dev/null \
+     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
+    green_msg "FQ_CoDel + Netem optimization applied on $IFACE"
+    return 0
+
+  elif tc qdisc add dev "$IFACE" root handle 1: htb default 11 2>/dev/null \
+     && tc class add dev "$IFACE" parent 1: classid 1:1 htb rate 1000mbit ceil 1000mbit 2>/dev/null \
+     && tc class add dev "$IFACE" parent 1:1 classid 1:11 htb rate 1000mbit ceil 1000mbit 2>/dev/null \
+     && tc qdisc add dev "$IFACE" parent 1:11 handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null; then
+    green_msg "HTB + Netem optimization applied on $IFACE"
+    return 0
+
+  elif tc qdisc add dev "$IFACE" root handle 1: pfifo_fast 2>/dev/null \
+     && tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% 2>/dev/null; then
+    green_msg "PFIFO + Netem optimization applied on $IFACE"
+    return 0
+
+  elif tc qdisc add dev "$IFACE" root netem delay 1ms loss 0.005% 2>/dev/null; then
+    yellow_msg "Fallback Netem applied on $IFACE"
+    return 0
+  fi
+
+  red_msg "Failed to apply TC optimization on $IFACE"
+  return 1
+}
+
+# Run once now (always)
+apply_tc_smart >> /var/log/tc_smart.log 2>&1
+
+# Ask user if we should persist via cron @reboot
+echo
+yellow_msg "Do you want to persist TC optimization after reboot by adding a cron @reboot job? (y/n)"
+read -r tc_choice
+
+if [[ "$tc_choice" == "y" || "$tc_choice" == "Y" ]]; then
+  # Remove old entries (avoid duplicates)
+  crontab -l 2>/dev/null | grep -v "tc_smart.log" | crontab - 2>/dev/null
+
+  # Install new @reboot cron
+  (crontab -l 2>/dev/null; echo "@reboot sleep 30 && bash -lc '$(declare -f apply_tc_smart); apply_tc_smart' >> /var/log/tc_smart.log 2>&1") | crontab -
+
+  green_msg "Cron @reboot added: TC optimization will re-apply after reboot."
+else
+  yellow_msg "Cron not added. TC optimization was applied only for this session."
+fi
+
 echo
 green_msg '================================================================='
 green_msg 'Server optimization complete!'

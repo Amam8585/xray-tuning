@@ -80,48 +80,8 @@ if command -v pro >/dev/null 2>&1; then
 fi
 green_msg 'Terminal ads disabled'
 
-yellow_msg 'Installing XanMod kernel...'
-if uname -r | grep -q 'xanmod'; then
-  green_msg 'XanMod kernel is already installed'
-else
-  apt update -q
-  apt upgrade -y
-  apt install wget curl gpg -y
-  
-  cpu_level=$(awk -f <(cat - <<'EOF'
-/^flags/ {
-  if (/avx2/) level=4;
-  else if (/avx/) level=3;
-  else if (/sse4_2/) level=2;
-  else level=1;
-  print level;
-  exit level + 1;
-}
-EOF
-) /proc/cpuinfo)
-  
-  if [ "$cpu_level" -ge 1 ] && [ "$cpu_level" -le 4 ]; then
-    yellow_msg "CPU Level: v$cpu_level"
-    tmp_keyring="/tmp/xanmod-archive-keyring.gpg"
-    wget -qO $tmp_keyring https://dl.xanmod.org/archive.key || wget -qO $tmp_keyring https://gitlab.com/afrd.gpg
-    
-    gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg $tmp_keyring
-    rm -f $tmp_keyring
-    
-    echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
-    
-    apt update -q
-    apt install "linux-xanmod-x64v$cpu_level" -y
-    apt update -q
-    apt autoremove --purge -y
-    green_msg "XanMod Kernel installed successfully - @NotePadVPN"
-  else
-    red_msg "Unsupported CPU. Visit @NotePadVPN for alternative solutions."
-  fi
-fi
-
 yellow_msg 'Installing essential packages for Xray-Core performance...'
-apt -y install apt-transport-https apt-utils bash-completion busybox ca-certificates cron curl gnupg2 locales lsb-release nano preload screen software-properties-common ufw unzip vim wget xxd zip autoconf automake bash-completion build-essential git libtool make pkg-config python3 python3-pip bc binutils binutils-common binutils-x86-64-linux-gnu ubuntu-keyring haveged jq libsodium-dev libsqlite3-dev libssl-dev packagekit qrencode socat dialog htop net-tools mtr nload iftop
+apt -y install apt-transport-https apt-utils bash-completion busybox ca-certificates cron curl gnupg2 locales lsb-release nano preload screen software-properties-common unzip vim wget xxd zip autoconf automake bash-completion build-essential git libtool make pkg-config python3 python3-pip bc binutils binutils-common binutils-x86-64-linux-gnu ubuntu-keyring haveged jq libsodium-dev libsqlite3-dev libssl-dev packagekit qrencode socat dialog htop net-tools mtr nload iftop
 green_msg 'Essential packages installed successfully'
 
 yellow_msg 'Enabling services at boot...'
@@ -417,28 +377,6 @@ echo "ulimit -u unlimited" | tee -a $PROF_PATH
 echo "ulimit -v unlimited" | tee -a $PROF_PATH
 echo "ulimit -x unlimited" | tee -a $PROF_PATH
 cyan_msg 'System limits optimized for maximum connections'
-
-yellow_msg 'Setting up firewall...'
-apt -y purge firewalld
-apt update -q
-apt install -y ufw
-ufw disable
-
-SSH_PORT=$(grep -oP '^Port\s+\K\d+' "$SSH_PATH" 2>/dev/null)
-if [ -z "$SSH_PORT" ]; then
-  SSH_PORT=22
-fi
-
-ufw allow $SSH_PORT
-ufw allow 80/tcp
-ufw allow 80/udp
-ufw allow 443/tcp
-ufw allow 443/udp
-
-sed -i 's+/etc/ufw/sysctl.conf+/etc/sysctl.conf+gI' /etc/default/ufw
-echo "y" | ufw enable
-ufw reload
-green_msg 'Firewall configured for common VPN ports'
 
 echo
 green_msg '================================================================='

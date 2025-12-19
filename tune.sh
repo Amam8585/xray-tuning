@@ -1,41 +1,26 @@
 #!/bin/bash
 
-# Color Messages
-green_msg() {
-  tput setaf 2
-  echo "[*] ----- $1"
-  tput sgr0
-}
+# ===== Pretty Output (Colors + Helpers) =====
+if command -v tput >/dev/null 2>&1 && [[ -t 1 ]]; then
+  C_RESET="$(tput sgr0)"
+  C_RED="$(tput setaf 1)"
+  C_GREEN="$(tput setaf 2)"
+  C_YELLOW="$(tput setaf 3)"
+  C_BLUE="$(tput setaf 4)"
+  C_MAGENTA="$(tput setaf 5)"
+  C_CYAN="$(tput setaf 6)"
+  C_BOLD="$(tput bold)"
+else
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_MAGENTA=""; C_CYAN=""; C_BOLD=""
+fi
 
-yellow_msg() {
-  tput setaf 3
-  echo "[*] ----- $1"
-  tput sgr0
-}
-
-red_msg() {
-  tput setaf 1
-  echo "[*] ----- $1"
-  tput sgr0
-}
-
-blue_msg() {
-  tput setaf 4
-  echo "[*] ----- $1"
-  tput sgr0
-}
-
-purple_msg() {
-  tput setaf 5
-  echo "[*] ----- $1"
-  tput sgr0
-}
-
-cyan_msg() {
-  tput setaf 6
-  echo "[*] ----- $1"
-  tput sgr0
-}
+msg()   { echo -e "${C_CYAN}${C_BOLD}[*]${C_RESET} $*"; }
+ok()    { echo -e "${C_GREEN}${C_BOLD}[✓]${C_RESET} $*"; }
+warn()  { echo -e "${C_YELLOW}${C_BOLD}[!]${C_RESET} $*"; }
+err()   { echo -e "${C_RED}${C_BOLD}[✗]${C_RESET} $*"; }
+step()  { echo -e "\n${C_BLUE}${C_BOLD}==> $*${C_RESET}"; }
+title() { echo -e "${C_MAGENTA}${C_BOLD}$*${C_RESET}"; }
+line()  { echo -e "${C_BLUE}--------------------------------------------------${C_RESET}"; }
 
 SYS_PATH="/etc/sysctl.conf"
 PROF_PATH="/etc/profile"
@@ -45,22 +30,18 @@ SWAP_SIZE=4G
 
 if [[ "$EUID" -ne '0' ]]; then
   echo
-  red_msg 'Error: You must run this script as root!'
+  err 'Error: You must run this script as root!'
   echo
   exit 1
 fi
 
-clear
-echo
-green_msg '================================================================='
-green_msg 'Advanced Xray-Core & VPN Server Optimizer'
-yellow_msg 'Optimized for maximum performance and connection handling'
-blue_msg 'Visit @NotePadVPN on Telegram for more tools'
-green_msg '================================================================='
-echo
-sleep 1
+clear 2>/dev/null || true
+line
+title "XRAY / VPN Optimizer"
+msg "Amirjon"
+line
 
-yellow_msg 'Updating system...'
+step "System update"
 apt -q update
 apt -y upgrade
 apt -y full-upgrade
@@ -71,34 +52,34 @@ apt -q update
 apt -y upgrade
 apt -y full-upgrade
 apt -y autoremove --purge
-green_msg 'System updated successfully'
+ok 'System updated successfully'
 
-yellow_msg 'Disabling terminal ads...'
+step "Disable terminal ads"
 sed -i 's/ENABLED=1/ENABLED=0/g' /etc/default/motd-news
 if command -v pro >/dev/null 2>&1; then
   pro config set apt_news=false
 fi
-green_msg 'Terminal ads disabled'
+ok 'Terminal ads disabled'
 
-yellow_msg 'Installing essential packages for Xray-Core performance...'
+step "Install essential packages"
 apt -y install apt-transport-https apt-utils bash-completion busybox ca-certificates cron curl gnupg2 locales lsb-release nano preload screen software-properties-common unzip vim wget xxd zip autoconf automake bash-completion build-essential git libtool make pkg-config python3 python3-pip bc binutils binutils-common binutils-x86-64-linux-gnu ubuntu-keyring haveged jq libsodium-dev libsqlite3-dev libssl-dev packagekit qrencode socat dialog htop net-tools mtr nload iftop
-green_msg 'Essential packages installed successfully'
+ok 'Essential packages installed successfully'
 
-yellow_msg 'Enabling services at boot...'
+step "Enable services at boot"
 systemctl enable cron haveged preload
-green_msg 'Services enabled successfully'
+ok 'Services enabled successfully'
 
-yellow_msg 'Creating optimized SWAP space...'
+step "Create optimized SWAP"
 fallocate -l $SWAP_SIZE $SWAP_PATH
 chmod 600 $SWAP_PATH
 mkswap $SWAP_PATH
 swapon $SWAP_PATH
 echo "$SWAP_PATH none swap sw 0 0" >> /etc/fstab
-green_msg 'SWAP created successfully'
+ok 'SWAP created successfully'
 
-yellow_msg 'Optimizing system for Xray-Core & VPN performance...'
+step "Apply sysctl tuning"
 cp $SYS_PATH /etc/sysctl.conf.bak
-yellow_msg 'Backup saved to /etc/sysctl.conf.bak'
+msg 'Backup saved to /etc/sysctl.conf.bak'
 
 sed -i -e '/fs.file-max/d' \
   -e '/fs.nr_open/d' \
@@ -313,7 +294,7 @@ kernel.msgmnb = 131072
 EOF
 
 sysctl -p
-purple_msg 'Network optimization complete - Xray-Core ready for high performance'
+ok 'Network optimization complete - Xray-Core ready for high performance'
 
 # --- Extra sysctl tweaks for throughput + stability (Xray/VPN) ---
 # Append only (do not replace existing sysctl.conf content)
@@ -407,20 +388,20 @@ sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
 
 # Optional speed-oriented TCP profile for clean links (BBR + FQ_CoDel)
 echo
-yellow_msg "Use speed profile (BBR + FQ_CoDel) instead of stable Cubic + CoDel? (y/n)"
+warn "Do you want to enable optional BBR speed profile? (y/n)"
 read -r speed_profile_choice
 
 if [[ "$speed_profile_choice" =~ ^[Yy]$ ]]; then
   sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
   sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1 || true
-  green_msg "Speed profile applied (BBR + FQ_CoDel)."
+  ok "Speed profile applied (BBR + FQ_CoDel)."
 else
-  yellow_msg "Stable profile retained (Cubic + CoDel)."
+  msg "Stable profile retained (Cubic + CoDel)."
 fi
 
-yellow_msg 'Optimizing SSH...'
+step 'Optimize SSH'
 cp $SSH_PATH /etc/ssh/sshd_config.bak
-yellow_msg 'SSH config backup saved to /etc/ssh/sshd_config.bak'
+msg 'SSH config backup saved to /etc/ssh/sshd_config.bak'
 
 sed -i -e 's/#UseDNS yes/UseDNS no/' \
   -e 's/#Compression no/Compression yes/' \
@@ -448,9 +429,9 @@ echo "PermitTunnel yes" | tee -a "$SSH_PATH"
 echo "X11Forwarding yes" | tee -a "$SSH_PATH"
 
 systemctl restart ssh
-green_msg 'SSH optimized for better connections'
+ok 'SSH optimized for better connections'
 
-yellow_msg 'Optimizing system limits for Xray-Core high concurrent connections...'
+step 'Optimize system limits for Xray-Core high concurrent connections'
 sed -i '/ulimit -c/d' $PROF_PATH
 sed -i '/ulimit -d/d' $PROF_PATH
 sed -i '/ulimit -f/d' $PROF_PATH
@@ -479,7 +460,7 @@ echo "ulimit -t unlimited" | tee -a $PROF_PATH
 echo "ulimit -u unlimited" | tee -a $PROF_PATH
 echo "ulimit -v unlimited" | tee -a $PROF_PATH
 echo "ulimit -x unlimited" | tee -a $PROF_PATH
-cyan_msg 'System limits optimized for maximum connections'
+ok 'System limits optimized for maximum connections'
 
 # --- Safe NIC tuning for stability (no logs) ---
 apt -y install ethtool >/dev/null 2>&1 || true
@@ -507,11 +488,11 @@ fi
 
 # Ensure tc is available
 if ! command -v tc >/dev/null 2>&1; then
-  yellow_msg "Installing iproute2 (tc command)..."
+  step "Install iproute2 (tc command)"
   apt -y install iproute2
 fi
 
-yellow_msg "Applying traffic control (TC) to reduce packet loss/jitter..."
+step "Applying traffic control (TC) to reduce packet loss/jitter"
 
 apply_tc_smart() {
   # Detect main interface
@@ -519,7 +500,7 @@ apply_tc_smart() {
   IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5; exit}')
 
   if [ -z "$IFACE" ]; then
-    red_msg "Could not detect default network interface. Skipping TC."
+    err "Could not detect default network interface. Skipping TC."
     return 1
   fi
 
@@ -532,19 +513,19 @@ apply_tc_smart() {
 
   # Try CAKE -> FQ_CoDel -> PFIFO
   if tc qdisc add dev "$IFACE" root handle 1: cake bandwidth 1000mbit rtt 20ms 2>/dev/null; then
-    green_msg "CAKE queue discipline applied on $IFACE"
+    ok "CAKE queue discipline applied on $IFACE"
     return 0
 
   elif tc qdisc add dev "$IFACE" root handle 1: fq_codel limit 10240 flows 1024 target 5ms interval 100ms 2>/dev/null; then
-    green_msg "FQ_CoDel queue discipline applied on $IFACE"
+    ok "FQ_CoDel queue discipline applied on $IFACE"
     return 0
 
   elif tc qdisc add dev "$IFACE" root handle 1: pfifo_fast 2>/dev/null; then
-    yellow_msg "Fallback pfifo_fast applied on $IFACE"
+    warn "Fallback pfifo_fast applied on $IFACE"
     return 0
   fi
 
-  red_msg "Failed to apply TC optimization on $IFACE"
+  err "Failed to apply TC optimization on $IFACE"
   return 1
 }
 
@@ -552,34 +533,23 @@ apply_tc_smart() {
 apply_tc_smart
 
 echo
-yellow_msg "Do you want to add optional Netem impairments (delay/loss) on top? (n = default clean path) (y/n)"
+warn "Apply Netem impairments (adds artificial loss/jitter)? (y/n) [default: n]"
 read -r netem_choice
 
 if [[ "$netem_choice" =~ ^[Yy]$ ]]; then
   IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5; exit}')
   if [[ -n "$IFACE" ]]; then
     tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null && \
-      green_msg "Netem impairments enabled on $IFACE" || \
-      yellow_msg "Could not enable Netem on $IFACE"
+      ok "Netem impairments enabled on $IFACE" || \
+      warn "Could not enable Netem on $IFACE"
   else
-    yellow_msg "No interface detected for Netem application."
+    warn "No interface detected for Netem application."
   fi
 else
-  yellow_msg "Netem skipped; clean CAKE/FQ_CoDel path in use."
+  msg "Netem skipped; clean CAKE/FQ_CoDel path in use."
 fi
 
-echo
-green_msg '================================================================='
-green_msg 'Server optimization complete!'
-yellow_msg '- Maximum concurrent connections'
-yellow_msg '- Optimized network stack for VPN services'
-blue_msg '@NotePadVPN - Visit our Telegram channel for more tools and tips!'
-purple_msg 'Rebooting is recommended to apply all changes properly'
-green_msg '================================================================='
-echo
-
-yellow_msg 'Would you like to reboot now? (Recommended) (y/n)'
-read choice
-if [[ "$choice" == 'y' || "$choice" == 'Y' ]]; then
-  reboot
-fi
+line
+ok 'Optimization complete'
+msg 'Recommended: test stability and reboot only if needed'
+line

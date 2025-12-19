@@ -315,6 +315,96 @@ EOF
 sysctl -p
 purple_msg 'Network optimization complete - Xray-Core ready for high performance'
 
+# --- Extra sysctl tweaks for throughput + stability (Xray/VPN) ---
+# Append only (do not replace existing sysctl.conf content)
+cat <<'EOF' >> /etc/sysctl.conf
+
+################################################################
+# Extra Network / TCP tuning for speed + stability (add-on)
+################################################################
+
+# Core buffers / queueing
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.core.rmem_default = 16777216
+net.core.wmem_default = 16777216
+net.core.netdev_max_backlog = 30000
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 8000
+net.core.somaxconn = 32768
+net.unix.max_dgram_qlen = 512
+
+# TCP buffers (balanced)
+net.ipv4.tcp_rmem = 8192 131072 134217728
+net.ipv4.tcp_wmem = 8192 131072 134217728
+
+# Congestion + qdisc (latency control)
+net.core.default_qdisc = fq_codel
+net.ipv4.tcp_congestion_control = bbr
+
+# TCP behavior
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_dsack = 1
+net.ipv4.tcp_fack = 1
+net.ipv4.tcp_ecn = 2
+net.ipv4.tcp_syn_retries = 3
+net.ipv4.tcp_synack_retries = 3
+net.ipv4.tcp_retries1 = 3
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_orphan_retries = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_mtu_probing = 2
+
+# Routing / forwarding (needed for VPN)
+net.ipv4.ip_forward = 1
+
+# Conntrack (helps stability on many connections)
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_buckets = 262144
+net.netfilter.nf_conntrack_tcp_timeout_established = 432000
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 60
+net.netfilter.nf_conntrack_udp_timeout = 30
+net.netfilter.nf_conntrack_udp_timeout_stream = 120
+net.netfilter.nf_conntrack_tcp_be_liberal = 1
+net.netfilter.nf_conntrack_tcp_loose = 1
+
+# VM baseline
+vm.swappiness = 10
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+vm.dirty_expire_centisecs = 1500
+vm.dirty_writeback_centisecs = 500
+vm.vfs_cache_pressure = 50
+vm.min_free_kbytes = 131072
+
+# File descriptors / watchers
+fs.file-max = 2097152
+fs.nr_open = 2097152
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 256
+fs.inotify.max_queued_events = 32768
+fs.aio-max-nr = 1048576
+fs.pipe-max-size = 4194304
+
+EOF
+
+# Apply sysctl (do not fail the whole script if some keys are unsupported)
+sysctl -p /etc/sysctl.conf 2>/var/log/sysctl-extra-warn.log || true
+
 yellow_msg 'Optimizing SSH...'
 cp $SSH_PATH /etc/ssh/sshd_config.bak
 yellow_msg 'SSH config backup saved to /etc/ssh/sshd_config.bak'

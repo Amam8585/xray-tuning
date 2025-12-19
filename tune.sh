@@ -490,8 +490,7 @@ apply_tc_smart() {
   tc qdisc del dev "$IFACE" root 2>/dev/null
   tc qdisc del dev "$IFACE" ingress 2>/dev/null
 
-  # Set MTU and txqueuelen (safe defaults)
-  ip link set dev "$IFACE" mtu 1500 2>/dev/null
+  # Adjust txqueuelen (safe default)
   echo 1000 > "/sys/class/net/$IFACE/tx_queue_len" 2>/dev/null
 
   # Try CAKE -> FQ_CoDel -> HTB -> PFIFO -> fallback netem

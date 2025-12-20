@@ -28,12 +28,124 @@ SSH_PATH="/etc/ssh/sshd_config"
 SWAP_PATH="/swapfile"
 SWAP_SIZE=4G
 
-if [[ "$EUID" -ne '0' ]]; then
-  echo
-  err 'Error: You must run this script as root!'
-  echo
-  exit 1
+CHECK_MODE=false
+for arg in "$@"; do
+  case "$arg" in
+    --check|--analyze)
+      CHECK_MODE=true
+      CHECK_ARG="$arg"
+      ;;
+  esac
+done
+
+ensure_root() {
+  if [[ "$EUID" -ne '0' ]]; then
+    echo
+    err 'Error: You must run this script as root!'
+    echo
+    return 1
+  fi
+  return 0
+}
+
+run_preflight() {
+  local errors=0 warnings=0 iface os_name kernel_version mtu default_route qdisc_info
+
+  step "Root verification"
+  if ensure_root; then
+    ok 'Running as root'
+  else
+    ((errors++))
+  fi
+
+  step "System information"
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    os_name=$(source /etc/os-release && echo "${PRETTY_NAME:-$NAME}")
+  else
+    os_name="Unknown"
+  fi
+  kernel_version=$(uname -r 2>/dev/null || true)
+  msg "OS: ${os_name:-Unavailable}"
+  msg "Kernel: ${kernel_version:-Unavailable}"
+
+  step "Command availability"
+  for cmd in ip tc sysctl; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ok "Found required command: $cmd"
+    else
+      err "Missing required command: $cmd"
+      ((errors++))
+    fi
+  done
+  if command -v ethtool >/dev/null 2>&1; then
+    ok 'Found optional command: ethtool'
+  else
+    warn 'Optional command missing: ethtool'
+    ((warnings++))
+  fi
+
+  step "Default network interface"
+  if ! command -v ip >/dev/null 2>&1; then
+    err 'Could not determine default network interface (missing ip command)'
+  else
+    default_route=$(ip route show default 0.0.0.0/0 2>/dev/null | head -n1)
+    iface=$(echo "$default_route" | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+    if [[ -z "$iface" ]]; then
+      iface=$(ip -6 route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+    fi
+    if [[ -z "$iface" ]]; then
+      err 'Could not determine default network interface'
+      ((errors++))
+    else
+      ok "Default interface: $iface"
+      if command -v tc >/dev/null 2>&1; then
+        qdisc_info=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1)
+        msg "Qdisc: ${qdisc_info:-Unavailable}"
+      else
+        msg 'Qdisc: Unavailable (tc missing)'
+      fi
+      if command -v ethtool >/dev/null 2>&1; then
+        msg "Driver info:"
+        ethtool -i "$iface" 2>/dev/null || warn "Unable to read driver info for $iface"
+        msg "Ring parameters:"
+        ethtool -g "$iface" 2>/dev/null || warn "Unable to read ring parameters for $iface"
+        msg "Offload features:"
+        ethtool -k "$iface" 2>/dev/null || warn "Unable to read features for $iface"
+      fi
+      mtu=$(ip -o link show dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+      msg "MTU: ${mtu:-Unavailable}"
+    fi
+  fi
+
+  step "Configuration file readability"
+  for path in "$SYS_PATH" "$PROF_PATH" "$SSH_PATH"; do
+    if [[ -r "$path" ]]; then
+      ok "Readable: $path"
+    else
+      err "Unreadable or missing: $path"
+      ((errors++))
+    fi
+  done
+
+  if ((errors > 0)); then
+    err "Preflight summary: ERROR (errors: $errors, warnings: $warnings)"
+    return 1
+  elif ((warnings > 0)); then
+    warn "Preflight summary: WARN (warnings: $warnings)"
+    return 0
+  else
+    ok 'Preflight summary: OK'
+    return 0
+  fi
+}
+
+if $CHECK_MODE; then
+  run_preflight
+  exit $?
 fi
+
+ensure_root || exit 1
 
 clear 2>/dev/null || true
 line

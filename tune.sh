@@ -52,6 +52,7 @@ run_preflight() {
   local errors=0 warnings=0 iface os_name kernel_version mtu default_route qdisc_info
 
   step "Root verification"
+  msg "Current user id: $(id -u 2>/dev/null || echo 'unavailable')"
   if ensure_root; then
     ok 'Running as root'
   else

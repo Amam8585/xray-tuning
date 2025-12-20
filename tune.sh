@@ -22,7 +22,7 @@ step()  { echo -e "\n${C_BLUE}${C_BOLD}==> $*${C_RESET}"; }
 title() { echo -e "${C_MAGENTA}${C_BOLD}$*${C_RESET}"; }
 line()  { echo -e "${C_BLUE}--------------------------------------------------${C_RESET}"; }
 
-SYS_PATH="/etc/sysctl.conf"
+SYSCTL_BASE="/etc/sysctl.d/98-xray-base.conf"
 SYSCTL_EXTRA="/etc/sysctl.d/99-xray-extra.conf"
 PROF_PATH="/etc/profile"
 SSH_PATH="/etc/ssh/sshd_config"
@@ -124,7 +124,7 @@ run_preflight() {
   fi
 
   step "Configuration file readability"
-  for path in "$SYS_PATH" "$PROF_PATH" "$SSH_PATH"; do
+  for path in /etc/sysctl.conf "$PROF_PATH" "$SSH_PATH"; do
     if [[ -r "$path" ]]; then
       ok "Readable: $path"
     else
@@ -135,6 +135,33 @@ run_preflight() {
         err "Missing: $path"
         ((errors++))
       fi
+    fi
+  done
+
+  step "sysctl.d availability"
+  if [[ -d /etc/sysctl.d ]]; then
+    ok "Directory exists: /etc/sysctl.d"
+    if [[ -w /etc/sysctl.d ]]; then
+      ok "Writable: /etc/sysctl.d"
+    else
+      warn "/etc/sysctl.d is not writable; sysctl drop-ins may fail"
+      ((warnings++))
+    fi
+  else
+    warn "/etc/sysctl.d is missing; sysctl drop-ins will not be created"
+    ((warnings++))
+  fi
+
+  for path in "$SYSCTL_BASE" "$SYSCTL_EXTRA"; do
+    if [[ -e "$path" ]]; then
+      if [[ -r "$path" ]]; then
+        ok "Readable: $path"
+      else
+        warn "Unreadable sysctl drop-in: $path"
+        ((warnings++))
+      fi
+    else
+      msg "Not present (will be created during main run if needed): $path"
     fi
   done
 
@@ -162,7 +189,7 @@ run_preflight() {
   fi
 
   step "fstab swap entry"
-  if [[ -f /etc/fstab ]] && grep -q "${SWAP_PATH//\//\/}[^[:alnum:]]" /etc/fstab 2>/dev/null; then
+  if [[ -f /etc/fstab ]] && grep -qE "^[[:space:]]*${SWAP_PATH}[[:space:]]" /etc/fstab 2>/dev/null; then
     warn "Swap entry for $SWAP_PATH already present in /etc/fstab"
     ((warnings++))
   else
@@ -238,114 +265,15 @@ else
   chmod 600 $SWAP_PATH
   mkswap $SWAP_PATH
   swapon $SWAP_PATH
-  if ! grep -q "${SWAP_PATH//\//\/}[^[:alnum:]]" /etc/fstab 2>/dev/null; then
+  if ! grep -qE "^[[:space:]]*${SWAP_PATH}[[:space:]]" /etc/fstab 2>/dev/null; then
     echo "$SWAP_PATH none swap sw 0 0" >> /etc/fstab
   fi
   ok 'SWAP created successfully'
 fi
 
 step "Apply sysctl tuning"
-cp $SYS_PATH /etc/sysctl.conf.bak
-msg 'Backup saved to /etc/sysctl.conf.bak'
-
-sed -i -e '/fs.file-max/d' \
-  -e '/fs.nr_open/d' \
-  -e '/fs.inotify.max_user_watches/d' \
-  -e '/fs.inotify.max_user_instances/d' \
-  -e '/net.core.default_qdisc/d' \
-  -e '/net.core.netdev_max_backlog/d' \
-  -e '/net.core.optmem_max/d' \
-  -e '/net.core.somaxconn/d' \
-  -e '/net.core.rmem_max/d' \
-  -e '/net.core.wmem_max/d' \
-  -e '/net.core.rmem_default/d' \
-  -e '/net.core.wmem_default/d' \
-  -e '/net.ipv4.tcp_rmem/d' \
-  -e '/net.ipv4.tcp_wmem/d' \
-  -e '/net.ipv4.tcp_congestion_control/d' \
-  -e '/net.ipv4.tcp_fastopen/d' \
-  -e '/net.ipv4.tcp_fin_timeout/d' \
-  -e '/net.ipv4.tcp_keepalive_time/d' \
-  -e '/net.ipv4.tcp_keepalive_probes/d' \
-  -e '/net.ipv4.tcp_keepalive_intvl/d' \
-  -e '/net.ipv4.tcp_max_orphans/d' \
-  -e '/net.ipv4.tcp_max_syn_backlog/d' \
-  -e '/net.ipv4.tcp_max_tw_buckets/d' \
-  -e '/net.ipv4.tcp_mem/d' \
-  -e '/net.ipv4.tcp_mtu_probing/d' \
-  -e '/net.ipv4.tcp_notsent_lowat/d' \
-  -e '/net.ipv4.tcp_retries2/d' \
-  -e '/net.ipv4.tcp_sack/d' \
-  -e '/net.ipv4.tcp_dsack/d' \
-  -e '/net.ipv4.tcp_slow_start_after_idle/d' \
-  -e '/net.ipv4.tcp_window_scaling/d' \
-  -e '/net.ipv4.tcp_adv_win_scale/d' \
-  -e '/net.ipv4.tcp_ecn/d' \
-  -e '/net.ipv4.tcp_ecn_fallback/d' \
-  -e '/net.ipv4.tcp_syncookies/d' \
-  -e '/net.ipv4.udp_mem/d' \
-  -e '/net.ipv6.conf.all.disable_ipv6/d' \
-  -e '/net.ipv6.conf.default.disable_ipv6/d' \
-  -e '/net.ipv6.conf.lo.disable_ipv6/d' \
-  -e '/net.unix.max_dgram_qlen/d' \
-  -e '/vm.min_free_kbytes/d' \
-  -e '/vm.swappiness/d' \
-  -e '/vm.vfs_cache_pressure/d' \
-  -e '/net.ipv4.conf.default.rp_filter/d' \
-  -e '/net.ipv4.conf.all.rp_filter/d' \
-  -e '/net.ipv4.conf.all.accept_source_route/d' \
-  -e '/net.ipv4.conf.default.accept_source_route/d' \
-  -e '/net.ipv4.neigh.default.gc_thresh1/d' \
-  -e '/net.ipv4.neigh.default.gc_thresh2/d' \
-  -e '/net.ipv4.neigh.default.gc_thresh3/d' \
-  -e '/net.ipv4.neigh.default.gc_stale_time/d' \
-  -e '/net.ipv4.conf.default.arp_announce/d' \
-  -e '/net.ipv4.conf.lo.arp_announce/d' \
-  -e '/net.ipv4.conf.all.arp_announce/d' \
-  -e '/kernel.panic/d' \
-  -e '/vm.dirty_ratio/d' \
-  -e '/vm.overcommit_memory/d' \
-  -e '/vm.overcommit_ratio/d' \
-  -e '/net.ipv4.tcp_autocorking/d' \
-  -e '/net.ipv4.tcp_defer_accept/d' \
-  -e '/net.ipv4.tcp_timestamps/d' \
-  -e '/net.ipv4.tcp_notsent_lowat/d' \
-  -e '/net.ipv4.tcp_frto/d' \
-  -e '/net.ipv4.ip_local_port_range/d' \
-  -e '/net.ipv4.tcp_rfc1337/d' \
-  -e '/net.ipv4.tcp_tw_reuse/d' \
-  -e '/net.ipv4.tcp_low_latency/d' \
-  -e '/net.ipv4.tcp_delack_min/d' \
-  -e '/net.ipv4.tcp_thin_linear_timeouts/d' \
-  -e '/net.ipv4.ip_forward/d' \
-  -e '/net.ipv4.udp_l3mdev_accept/d' \
-  -e '/net.ipv4.tcp_l3mdev_accept/d' \
-  -e '/kernel.shmmax/d' \
-  -e '/kernel.shmall/d' \
-  -e '/kernel.shmmni/d' \
-  -e '/kernel.sem/d' \
-  -e '/kernel.msgmni/d' \
-  -e '/kernel.msgmax/d' \
-  -e '/kernel.msgmnb/d' \
-  -e '/net.ipv4.tcp_mtu_probing/d' \
-  -e '/net.ipv4.tcp_base_mss/d' \
-  -e '/net.ipv4.tcp_probe_interval/d' \
-  -e '/net.ipv4.tcp_probe_threshold/d' \
-  -e '/net.ipv4.tcp_synack_retries/d' \
-  -e '/net.ipv4.tcp_syn_retries/d' \
-  -e '/vm.dirty_background_ratio/d' \
-  -e '/vm.dirty_expire_centisecs/d' \
-  -e '/vm.dirty_writeback_centisecs/d' \
-  -e '/kernel.numa_balancing/d' \
-  -e '/kernel.sched_min_granularity_ns/d' \
-  -e '/kernel.sched_wakeup_granularity_ns/d' \
-  -e '/kernel.sched_migration_cost_ns/d' \
-  -e '/kernel.sched_autogroup_enabled/d' \
-  -e '/^#/d' \
-  -e '/^$/d' \
-  "$SYS_PATH"
-  
-cat << 'EOF' > "$SYS_PATH"
+mkdir -p /etc/sysctl.d
+cat << 'EOF' > "$SYSCTL_BASE"
 ################################################################
 #          Advanced Network Optimization for Xray-Core          #
 #               Visit @NotePadVPN for more tools                #
@@ -459,9 +387,7 @@ kernel.msgmni = 65536
 kernel.msgmax = 131072
 kernel.msgmnb = 131072
 EOF
-
-sysctl -p
-ok 'Network optimization baseline applied'
+ok 'Network optimization baseline written to /etc/sysctl.d/98-xray-base.conf'
 
 # --- Extra sysctl tweaks for throughput + stability (Xray/VPN) ---
 cat <<'EOF' > "$SYSCTL_EXTRA"
@@ -550,6 +476,7 @@ fs.pipe-max-size = 4194304
 EOF
 
 # Apply sysctl (do not fail the whole script if some keys are unsupported)
+sysctl -p "$SYSCTL_BASE"  >/dev/null 2>&1 || true
 sysctl -p "$SYSCTL_EXTRA" >/dev/null 2>&1 || true
 
 # Optional speed-oriented TCP profile for clean links (BBR + FQ_CoDel)
@@ -629,19 +556,49 @@ echo "ulimit -x unlimited" | tee -a $PROF_PATH
 ok 'System limits optimized for maximum connections'
 
 # --- Safe NIC tuning for stability (no logs) ---
-apt -y install ethtool >/dev/null 2>&1 || true
+SKIP_ETHTOOL=false
+if ! command -v ethtool >/dev/null 2>&1; then
+  warn "ethtool not found. Install it for NIC tuning? (y/n) [default: n]"
+  read -r install_ethtool
+  if [[ "$install_ethtool" =~ ^[Yy]$ ]]; then
+    apt -y install ethtool >/dev/null 2>&1 || true
+  else
+    SKIP_ETHTOOL=true
+    msg "Skipping NIC tuning because ethtool is unavailable."
+  fi
+fi
 
 IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
-if [[ -n "$IFACE" ]]; then
+if [[ -n "$IFACE" && "$SKIP_ETHTOOL" == false ]]; then
 
-  # Increase ring buffers to NIC maximum (if supported)
+  # Increase ring buffers within safe limits (if supported)
   RING="$(ethtool -g "$IFACE" 2>/dev/null || true)"
   MAX_RX="$(echo "$RING" | awk '/Pre-set maximums:/,0' | awk '/RX:/ {print $2; exit}')"
   MAX_TX="$(echo "$RING" | awk '/Pre-set maximums:/,0' | awk '/TX:/ {print $2; exit}')"
+  DRIVER="$(ethtool -i "$IFACE" 2>/dev/null | awk -F': ' '/^driver:/ {print $2; exit}')"
+
+  if [[ -n "$DRIVER" ]]; then
+    if [[ "$DRIVER" == "virtio_net" ]]; then
+      MAX_SAFE=256
+    else
+      MAX_SAFE=2048
+    fi
+  else
+    MAX_SAFE=2048
+  fi
+
+  TARGET_RX=""
+  TARGET_TX=""
+  if [[ -n "$MAX_RX" ]]; then
+    TARGET_RX=$(( MAX_RX < MAX_SAFE ? MAX_RX : MAX_SAFE ))
+  fi
+  if [[ -n "$MAX_TX" ]]; then
+    TARGET_TX=$(( MAX_TX < MAX_SAFE ? MAX_TX : MAX_SAFE ))
+  fi
 
   args=()
-  [[ -n "$MAX_RX" ]] && args+=(rx "$MAX_RX")
-  [[ -n "$MAX_TX" ]] && args+=(tx "$MAX_TX")
+  [[ -n "$TARGET_RX" ]] && args+=(rx "$TARGET_RX")
+  [[ -n "$TARGET_TX" ]] && args+=(tx "$TARGET_TX")
   [[ ${#args[@]} -gt 0 ]] && ethtool -G "$IFACE" "${args[@]}" 2>/dev/null || true
 
   # Enable safe, low-risk NIC features
@@ -653,9 +610,17 @@ if [[ -n "$IFACE" ]]; then
 fi
 
 # Ensure tc is available
+SKIP_TC=false
 if ! command -v tc >/dev/null 2>&1; then
   step "Install iproute2 (tc command)"
-  apt -y install iproute2
+  warn "tc not found. Install iproute2? (y/n) [default: n]"
+  read -r install_tc
+  if [[ "$install_tc" =~ ^[Yy]$ ]]; then
+    apt -y install iproute2 >/dev/null 2>&1 || true
+  else
+    SKIP_TC=true
+    msg "Skipping traffic control because tc is unavailable."
+  fi
 fi
 
 step "Applying traffic control (TC) to reduce packet loss/jitter"
@@ -678,7 +643,7 @@ apply_tc_smart() {
   echo 1000 > "/sys/class/net/$IFACE/tx_queue_len" 2>/dev/null
 
   # Try CAKE -> FQ_CoDel -> PFIFO
-  if tc qdisc add dev "$IFACE" root handle 1: cake bandwidth 1000mbit rtt 20ms 2>/dev/null; then
+  if tc qdisc add dev "$IFACE" root handle 1: cake rtt 20ms 2>/dev/null; then
     ok "CAKE queue discipline applied on $IFACE"
     return 0
 
@@ -696,13 +661,17 @@ apply_tc_smart() {
 }
 
 # Run once now (always)
-apply_tc_smart
+if [[ "$SKIP_TC" == false ]] && command -v tc >/dev/null 2>&1; then
+  apply_tc_smart
+else
+  msg "TC setup skipped."
+fi
 
 echo
 warn "Apply Netem impairments (adds artificial loss/jitter)? (y/n) [default: n]"
 read -r netem_choice
 
-if [[ "$netem_choice" =~ ^[Yy]$ ]]; then
+if [[ "$netem_choice" =~ ^[Yy]$ ]] && [[ "$SKIP_TC" == false ]] && command -v tc >/dev/null 2>&1; then
   IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5; exit}')
   if [[ -n "$IFACE" ]]; then
     tc qdisc add dev "$IFACE" parent 1: handle 10: netem delay 1ms loss 0.005% duplicate 0.05% reorder 0.5% 2>/dev/null && \

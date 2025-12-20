@@ -23,6 +23,7 @@ title() { echo -e "${C_MAGENTA}${C_BOLD}$*${C_RESET}"; }
 line()  { echo -e "${C_BLUE}--------------------------------------------------${C_RESET}"; }
 
 SYS_PATH="/etc/sysctl.conf"
+SYSCTL_EXTRA="/etc/sysctl.d/99-xray-extra.conf"
 PROF_PATH="/etc/profile"
 SSH_PATH="/etc/ssh/sshd_config"
 SWAP_PATH="/swapfile"
@@ -40,9 +41,11 @@ done
 
 ensure_root() {
   if [[ "$EUID" -ne '0' ]]; then
-    echo
-    err 'Error: You must run this script as root!'
-    echo
+    if [[ "$1" != '--quiet' ]]; then
+      echo
+      err 'Error: You must run this script as root!'
+      echo
+    fi
     return 1
   fi
   return 0
@@ -53,10 +56,11 @@ run_preflight() {
 
   step "Root verification"
   msg "Current user id: $(id -u 2>/dev/null || echo 'unavailable')"
-  if ensure_root; then
+  if ensure_root --quiet; then
     ok 'Running as root'
   else
-    ((errors++))
+    warn 'Running without root privileges; some checks may be limited'
+    ((warnings++))
   fi
 
   step "System information"
@@ -71,7 +75,7 @@ run_preflight() {
   msg "Kernel: ${kernel_version:-Unavailable}"
 
   step "Command availability"
-  for cmd in ip tc sysctl; do
+  for cmd in ip tc sysctl apt sed tee fallocate mkswap swapon systemctl awk grep; do
     if command -v "$cmd" >/dev/null 2>&1; then
       ok "Found required command: $cmd"
     else
@@ -124,19 +128,63 @@ run_preflight() {
     if [[ -r "$path" ]]; then
       ok "Readable: $path"
     else
-      err "Unreadable or missing: $path"
-      ((errors++))
+      if [[ -e "$path" ]]; then
+        warn "Unreadable (possibly due to permissions): $path"
+        ((warnings++))
+      else
+        err "Missing: $path"
+        ((errors++))
+      fi
     fi
   done
 
+  step "Swap status"
+  if [[ -f "$SWAP_PATH" ]]; then
+    warn "Swapfile already exists at $SWAP_PATH"
+    ((warnings++))
+  fi
+  if swapon --show >/dev/null 2>&1 && [[ -n $(swapon --show 2>/dev/null | tail -n +2) ]]; then
+    warn 'Swap is currently active; main run will not recreate it'
+    ((warnings++))
+  fi
+  if df -BG / >/dev/null 2>&1; then
+    local avail_gb
+    avail_gb=$(df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}')
+    if [[ -n "$avail_gb" && "$avail_gb" -lt 4 ]]; then
+      err 'Insufficient disk space on / for 4G swapfile'
+      ((errors++))
+    else
+      msg "Available disk space on /: ${avail_gb:-unknown}G"
+    fi
+  else
+    warn 'Could not determine disk space (df unavailable)'
+    ((warnings++))
+  fi
+
+  step "fstab swap entry"
+  if [[ -f /etc/fstab ]] && grep -q "${SWAP_PATH//\//\/}[^[:alnum:]]" /etc/fstab 2>/dev/null; then
+    warn "Swap entry for $SWAP_PATH already present in /etc/fstab"
+    ((warnings++))
+  else
+    msg 'No existing swapfile entry found in /etc/fstab'
+  fi
+
+  step "SSH service availability"
+  if systemctl status ssh >/dev/null 2>&1 || systemctl status sshd >/dev/null 2>&1; then
+    ok 'SSH service detected'
+  else
+    warn 'SSH service not detected (ssh/sshd)'
+    ((warnings++))
+  fi
+
   if ((errors > 0)); then
-    err "Preflight summary: ERROR (errors: $errors, warnings: $warnings)"
+    err "STATUS: ERROR (errors: $errors)"
     return 1
   elif ((warnings > 0)); then
-    warn "Preflight summary: WARN (warnings: $warnings)"
+    warn "STATUS: WARN (warnings: $warnings)"
     return 0
   else
-    ok 'Preflight summary: OK'
+    ok 'STATUS: OK'
     return 0
   fi
 }
@@ -183,12 +231,18 @@ systemctl enable cron haveged preload
 ok 'Services enabled successfully'
 
 step "Create optimized SWAP"
-fallocate -l $SWAP_SIZE $SWAP_PATH
-chmod 600 $SWAP_PATH
-mkswap $SWAP_PATH
-swapon $SWAP_PATH
-echo "$SWAP_PATH none swap sw 0 0" >> /etc/fstab
-ok 'SWAP created successfully'
+if [[ -f "$SWAP_PATH" ]] || [[ -n $(swapon --show 2>/dev/null | awk 'NR>1 {print $1}') ]]; then
+  warn 'Swapfile already exists or swap is active; skipping creation'
+else
+  fallocate -l $SWAP_SIZE $SWAP_PATH
+  chmod 600 $SWAP_PATH
+  mkswap $SWAP_PATH
+  swapon $SWAP_PATH
+  if ! grep -q "${SWAP_PATH//\//\/}[^[:alnum:]]" /etc/fstab 2>/dev/null; then
+    echo "$SWAP_PATH none swap sw 0 0" >> /etc/fstab
+  fi
+  ok 'SWAP created successfully'
+fi
 
 step "Apply sysctl tuning"
 cp $SYS_PATH /etc/sysctl.conf.bak
@@ -407,11 +461,10 @@ kernel.msgmnb = 131072
 EOF
 
 sysctl -p
-ok 'Network optimization complete - Xray-Core ready for high performance'
+ok 'Network optimization baseline applied'
 
 # --- Extra sysctl tweaks for throughput + stability (Xray/VPN) ---
-# Append only (do not replace existing sysctl.conf content)
-cat <<'EOF' >> /etc/sysctl.conf
+cat <<'EOF' > "$SYSCTL_EXTRA"
 
 ################################################################
 # Extra Network / TCP tuning for speed + stability (add-on)
@@ -497,7 +550,7 @@ fs.pipe-max-size = 4194304
 EOF
 
 # Apply sysctl (do not fail the whole script if some keys are unsupported)
-sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+sysctl -p "$SYSCTL_EXTRA" >/dev/null 2>&1 || true
 
 # Optional speed-oriented TCP profile for clean links (BBR + FQ_CoDel)
 echo
@@ -541,7 +594,7 @@ echo "GatewayPorts yes" | tee -a "$SSH_PATH"
 echo "PermitTunnel yes" | tee -a "$SSH_PATH"
 echo "X11Forwarding yes" | tee -a "$SSH_PATH"
 
-systemctl restart ssh
+systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 ok 'SSH optimized for better connections'
 
 step 'Optimize system limits for Xray-Core high concurrent connections'
